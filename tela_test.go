@@ -368,6 +368,42 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+
+func TestIsShardFileName(t *testing.T) {
+	// Valid shard filenames: name-N.ext and name-N.ext.gz
+	validShards := []string{
+		"file-1.js",
+		"file-2.js",
+		"app-1.js.gz",
+		"app-2.js.gz",
+		"rive-1.js.gz",
+		"rive-5.js.gz",
+		"my-file-1.go",
+		"my-file-3.go.gz",
+		"upload-1.html.gz",
+		"upload-2.html.gz",
+	}
+	for _, name := range validShards {
+		assert.True(t, isShardFileName(name), "%q should be detected as a shard filename", name)
+	}
+
+	// Non-shard filenames: regular files, index files, names without numeric suffix
+	notShards := []string{
+		"index.html",
+		"app.js",
+		"style.css",
+		"app.js.gz",     // compressed but not a shard (no -N suffix)
+		"my-file.go",    // has dash but suffix is not an integer
+		"my-file.go.gz", // same, compressed
+		"",              // empty
+		"file.js",       // no dash at all
+		"file-abc.js",   // dash but suffix is not an integer
+	}
+	for _, name := range notShards {
+		assert.False(t, isShardFileName(name), "%q should NOT be detected as a shard filename", name)
+	}
+}
+
 func TestCompression(t *testing.T) {
 	testFiles := []string{
 		filepath.Join(testDir, "app1", "main.js"),
