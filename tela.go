@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -636,29 +637,17 @@ func Transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, transfers []rpc.Tr
 	return
 }
 
-// isShardFileName returns true if name matches the DocShard fragment naming pattern
-// (e.g. file-3.js or file-3.js.gz) where the numeric suffix is a positive integer.
-// Such files are fragments of a single compressed stream and must NOT be decompressed
-// individually — ConstructFromShards handles decompression after concatenation.
-func isShardFileName(name string) bool {
-	base := name
-	// Strip compression extension first (e.g. .gz)
-	if IsCompressedExt(filepath.Ext(base)) {
-		base = strings.TrimSuffix(base, filepath.Ext(base))
-	}
-	// Strip the remaining extension (e.g. .js)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	// Check for name-N pattern
-	parts := strings.Split(base, "-")
-	if len(parts) < 2 {
-		return false
-	}
-	_, parseErr := strconv.Atoi(parts[len(parts)-1])
-	return parseErr == nil
-}
-
 // Clone a TELA-DOC SCID to path from endpoint
-func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
+func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid DOC SCID: %s", scid)
 		return
@@ -697,17 +686,7 @@ func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 	var compression string
 	ext := filepath.Ext(fileName)
 	if IsCompressedExt(ext) {
-		// Only attempt decompression for regular files, not for DocShard fragments.
-		// Shard files (e.g. file-3.js.gz) are slices of a single base64-gzip stream.
-		// Decompressing each slice individually always fails with "unexpected EOF" or
-		// "gzip: invalid header". The DocShards INDEX path (cloneDocShards →
-		// ConstructFromShards) handles reconstruction correctly by concatenating all
-		// shard bytes first and then decompressing the combined stream.
-		// When cloneDOC is called for a shard file (e.g. from a non-.shards INDEX),
-		// we save the raw shard bytes without touching them.
-		if !isShardFileName(fileName) {
-			compression = ext
-		}
+		compression = ext
 	}
 
 	recreate := strings.TrimSuffix(fileName, compression)
@@ -761,7 +740,16 @@ func cloneDOC(scid, docNum, path, endpoint string) (clone Cloning, err error) {
 }
 
 // Clone a TELA-INDEX SCID to path from endpoint creating all DOCs embedded within the INDEX
-func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
+func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -817,7 +805,7 @@ func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
 		}
 	} else {
 		// Parse INDEX SC for valid DOCs
-		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, 0, basePath, endpoint)
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, 0, basePath, endpoint, cancelled...)
 		if err != nil {
 			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
 			err = fmt.Errorf("%s %s", tagErr, err)
@@ -837,8 +825,8 @@ func cloneINDEX(scid, dURL, path, endpoint string) (clone Cloning, err error) {
 }
 
 // cloneDocShards takes a TELA-INDEX SC and parses its DOCs, creating them as DocShards which get recreated as a single file
-func cloneDocShards(sc dvm.SmartContract, basePath, endpoint string) (err error) {
-	docShards, recreate, compression, err := parseDocShards(sc, basePath, endpoint)
+func cloneDocShards(sc dvm.SmartContract, basePath, endpoint string, cancelled ...*atomic.Bool) (err error) {
+	docShards, recreate, compression, err := parseDocShards(sc, basePath, endpoint, cancelled...)
 	if err != nil {
 		err = fmt.Errorf("could not clone DocShards: %s", err)
 		return
@@ -1000,8 +988,17 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 	return
 }
 
-// Clone a TELA-INDEX SCID at commit TXID to path from endpoint creating all DOCs embedded within the INDEX at the commit height
-func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string) (clone Cloning, err error) {
+// cloneINDEXAtCommit clones a TELA-INDEX-1 SC from endpoint at commit TXID if the SC code from that commit can be decoded
+func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
+	var isCancelled *atomic.Bool
+	if len(cancelled) > 0 {
+		isCancelled = cancelled[0]
+	}
+
+	if isCancelled != nil && isCancelled.Load() {
+		return clone, fmt.Errorf("cancelled")
+	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -1072,7 +1069,7 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string) (clone 
 		}
 	} else {
 		// Parse INDEX SC for valid DOCs
-		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, height, basePath, endpoint)
+		entrypoint, servePath, err = parseAndCloneINDEXForDOCs(sc, height, basePath, endpoint, cancelled...)
 		if err != nil {
 			// If all of the files were not cloned successfully, any residual files are removed if they did not exist already
 			err = fmt.Errorf("%s %s", tagErr, err)
@@ -1211,7 +1208,7 @@ func serveTELA(scid string, clone Cloning) (link string, err error) {
 }
 
 // ServeTELA clones and serves a TELA-INDEX-1 SC from endpoint and returns a link to the running TELA server if successful
-func ServeTELA(scid, endpoint string) (link string, err error) {
+func ServeTELA(scid, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	tela.Lock()
 	defer tela.Unlock()
 
@@ -1220,7 +1217,7 @@ func ServeTELA(scid, endpoint string) (link string, err error) {
 		return
 	}
 
-	clone, err := cloneINDEX(scid, dURL, tela.path.tela(), endpoint)
+	clone, err := cloneINDEX(scid, dURL, tela.path.tela(), endpoint, cancelled...)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -1231,7 +1228,7 @@ func ServeTELA(scid, endpoint string) (link string, err error) {
 
 // ServeAtCommit clones and serves a TELA-INDEX-1 SC from endpoint at commit TXID if the SC code from that commit can be decoded,
 // ensure AllowUpdates is set true prior to calling ServeAtCommit otherwise it will return error
-func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
+func ServeAtCommit(scid, txid, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	tela.Lock()
 	defer tela.Unlock()
 
@@ -1245,7 +1242,7 @@ func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
 		return
 	}
 
-	clone, err := cloneINDEXAtCommit(0, scid, txid, tela.path.tela(), endpoint)
+	clone, err := cloneINDEXAtCommit(0, scid, txid, tela.path.tela(), endpoint, cancelled...)
 	if err != nil {
 		os.RemoveAll(clone.BasePath)
 		return
@@ -1256,7 +1253,7 @@ func ServeAtCommit(scid, txid, endpoint string) (link string, err error) {
 
 // OpenTELALink will open content from a telaLink formatted as tela://open/<scid>/subDir/../..
 // if no server exists for that content it will try starting one using ServeTELA()
-func OpenTELALink(telaLink, endpoint string) (link string, err error) {
+func OpenTELALink(telaLink, endpoint string, cancelled ...*atomic.Bool) (link string, err error) {
 	target, args, err := ParseTELALink(telaLink)
 	if err != nil {
 		err = fmt.Errorf("could not parse tela link: %s", err)
@@ -1274,7 +1271,7 @@ func OpenTELALink(telaLink, endpoint string) (link string, err error) {
 	}
 
 	var exists bool
-	link, err = ServeTELA(args[1], endpoint)
+	link, err = ServeTELA(args[1], endpoint, cancelled...)
 	if err != nil {
 		if !strings.Contains(err.Error(), "already exists") {
 			err = fmt.Errorf("could not serve tela link: %s", err)
