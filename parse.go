@@ -25,6 +25,40 @@ const (
 	MAX_INDEX_INSTALL_SIZE = float64(11.64) // INDEX SC file size should be below this
 )
 
+// isShardFileName checks if fileName matches the DocShard pattern: name-N.ext or name-N.ext.gz
+func isShardFileName(fileName string) bool {
+	if fileName == "" {
+		return false
+	}
+
+	// Remove compression extension if present
+	fileName = TrimCompressedExt(fileName)
+
+	// Find the last dash
+	lastDash := strings.LastIndex(fileName, "-")
+	if lastDash == -1 || lastDash == 0 {
+		return false
+	}
+
+	// Check if suffix after dash is a positive integer
+	suffix := fileName[lastDash+1:]
+	if suffix == "" {
+		return false
+	}
+
+	_, err := strconv.Atoi(suffix)
+	if err != nil {
+		return false
+	}
+
+	// Must have an extension after the number
+	if filepath.Ext(fileName) == "" {
+		return false
+	}
+
+	return true
+}
+
 // Append docCode to TELA-DOC-1 smart contract
 func appendDocCode(code, docCode string) (newCode string, err error) {
 	docSize := GetCodeSizeInKB(docCode)
