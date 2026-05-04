@@ -1,8 +1,6 @@
 module github.com/civilware/tela
 
-go 1.21
-
-toolchain go1.21.5
+go 1.22
 
 require (
 	github.com/chzyer/readline v1.5.1
@@ -19,6 +17,7 @@ replace github.com/deroproject/derohe => github.com/civilware/derohe v0.0.0-2024
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
+	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/beevik/ntp v1.2.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
