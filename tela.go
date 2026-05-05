@@ -675,26 +675,6 @@ func Transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, transfers []rpc.Tr
 	return
 }
 
-// isShardFileName returns true if name matches the DocShard fragment naming pattern
-// (e.g. file-3.js or file-3.js.gz) where the numeric suffix is a positive integer.
-// Such files are fragments of a single compressed stream and must NOT be decompressed
-// individually — ConstructFromShards handles decompression after concatenation.
-func isShardFileName(name string) bool {
-	base := name
-	// Strip compression extension first (e.g. .gz)
-	if IsCompressedExt(filepath.Ext(base)) {
-		base = strings.TrimSuffix(base, filepath.Ext(base))
-	}
-	// Strip the remaining extension (e.g. .js)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	// Check for name-N pattern
-	parts := strings.Split(base, "-")
-	if len(parts) < 2 {
-		return false
-	}
-	_, parseErr := strconv.Atoi(parts[len(parts)-1])
-	return parseErr == nil
-}
 
 // Clone a TELA-DOC SCID to path from endpoint
 func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
