@@ -3,21 +3,21 @@ module github.com/civilware/tela
 go 1.22
 
 require (
+	github.com/andybalholm/brotli v1.2.1
 	github.com/chzyer/readline v1.5.1
 	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
 	github.com/creachadair/jrpc2 v0.35.4
-	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
+	github.com/deroproject/derohe v0.0.0-20250813215012-9b6a8b82c839
 	github.com/deroproject/graviton v0.0.0-20220130070622-2c248a53b2e1
 	github.com/gorilla/websocket v1.5.0
 	github.com/stretchr/testify v1.8.4
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => github.com/civilware/derohe v0.0.0-20240909003240-fa76d6016cc6
+replace github.com/deroproject/derohe => /home/priest/Projects/derohe
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
-	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/beevik/ntp v1.2.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
