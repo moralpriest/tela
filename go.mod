@@ -1,19 +1,19 @@
 module github.com/civilware/tela
 
-go 1.22
+go 1.23
 
 require (
 	github.com/chzyer/readline v1.5.1
 	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
 	github.com/creachadair/jrpc2 v0.35.4
-	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
+	github.com/deroproject/derohe v0.0.0-20260527071132-5cd042e8f541
 	github.com/deroproject/graviton v0.0.0-20220130070622-2c248a53b2e1
 	github.com/gorilla/websocket v1.5.0
 	github.com/stretchr/testify v1.8.4
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => github.com/civilware/derohe v0.0.0-20240909003240-fa76d6016cc6
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260527071132-5cd042e8f541
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
@@ -24,7 +24,7 @@ require (
 	github.com/cenkalti/hub v1.0.1 // indirect
 	github.com/cenkalti/rpc2 v0.0.0-20210604223624-c1acbc6ec984 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
-	github.com/coder/websocket v1.8.12 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
