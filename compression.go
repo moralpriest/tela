@@ -122,7 +122,8 @@ func compressGzip(data []byte) (result string, err error) {
 // Decompress base64 encoded gzip data and return the result
 func decompressGzip(data []byte) (result []byte, err error) {
 	// Trim any null bytes or spaces that might have been introduced during shard reconstruction or database retrieval
-	cleanData := strings.Trim(string(data), "\x00\n\r\t ")
+	cleanData := strings.ReplaceAll(string(data), "\x00", "")
+	cleanData = strings.Trim(cleanData, "\n\r\t ")
 
 	var decoded []byte
 	decoded, err = base64.StdEncoding.DecodeString(cleanData)
@@ -172,7 +173,8 @@ func compressBrotli(data []byte) (result string, err error) {
 // Decompress base64 encoded brotli data and return the result
 func decompressBrotli(data []byte) (result []byte, err error) {
 	// Trim any null bytes or spaces that might have been introduced during shard reconstruction or database retrieval
-	cleanData := strings.Trim(string(data), "\x00\n\r\t ")
+	cleanData := strings.ReplaceAll(string(data), "\x00", "")
+	cleanData = strings.Trim(cleanData, "\n\r\t ")
 
 	var decoded []byte
 	decoded, err = base64.StdEncoding.DecodeString(cleanData)

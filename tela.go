@@ -285,7 +285,7 @@ func IsAcceptedLanguage(language string) bool {
 
 // Parse a TELA DOC that has been formatted for DocShards and get its code shard
 func parseDocShardCode(fileName, code string) (shard []byte, err error) {
-	code = strings.Trim(code, "\x00")
+	code = strings.ReplaceAll(code, "\x00", "")
 	start := strings.Index(code, "/*")
 	end := strings.Index(code, "*/")
 
@@ -304,7 +304,7 @@ func parseDocShardCode(fileName, code string) (shard []byte, err error) {
 
 // Parse a TELA DOC for its multiline comment
 func parseDocCode(code string) (comment string, err error) {
-	code = strings.Trim(code, "\x00")
+	code = strings.ReplaceAll(code, "\x00", "")
 	start := strings.Index(code, "/*")
 	end := strings.Index(code, "*/")
 
@@ -368,7 +368,7 @@ func parseAndSaveTELADoc(filePath, code, doctype, compression string) (err error
 // Decode a hex string if possible otherwise return it
 func decodeHexString(hexStr string) string {
 	if decode, err := hex.DecodeString(hexStr); err == nil {
-		return string(decode)
+		return strings.ReplaceAll(string(decode), "\x00", "")
 	}
 
 	return hexStr
@@ -538,7 +538,7 @@ func getContractCode(scid, endpoint string) (code string, err error) {
 		return
 	}
 
-	code = strings.Trim(result.Code, "\x00")
+	code = strings.ReplaceAll(result.Code, "\x00", "")
 
 	return
 }
@@ -558,7 +558,7 @@ func getContractCodeAtHeight(height int64, scid, endpoint string) (code string, 
 		return
 	}
 
-	code = strings.Trim(result.Code, "\x00")
+	code = strings.ReplaceAll(result.Code, "\x00", "")
 
 	return
 }
