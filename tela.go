@@ -111,6 +111,23 @@ type TELA struct {
 	}
 }
 
+var (
+	rpcSem = make(chan struct{}, 16) // Limit total concurrent RPC calls across all TELA operations
+)
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection") ||
+		strings.Contains(s, "abort") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "closed") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "no such host")
+}
+
 // Versioning structure used for package and contracts
 type Version struct {
 	Major int `json:"major"`
