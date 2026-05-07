@@ -368,6 +368,42 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+
+func TestIsShardFileName(t *testing.T) {
+	// Valid shard filenames: name-N.ext and name-N.ext.gz
+	validShards := []string{
+		"file-1.js",
+		"file-2.js",
+		"app-1.js.gz",
+		"app-2.js.gz",
+		"rive-1.js.gz",
+		"rive-5.js.gz",
+		"my-file-1.go",
+		"my-file-3.go.gz",
+		"upload-1.html.gz",
+		"upload-2.html.gz",
+	}
+	for _, name := range validShards {
+		assert.True(t, isShardFileName(name), "%q should be detected as a shard filename", name)
+	}
+
+	// Non-shard filenames: regular files, index files, names without numeric suffix
+	notShards := []string{
+		"index.html",
+		"app.js",
+		"style.css",
+		"app.js.gz",     // compressed but not a shard (no -N suffix)
+		"my-file.go",    // has dash but suffix is not an integer
+		"my-file.go.gz", // same, compressed
+		"",              // empty
+		"file.js",       // no dash at all
+		"file-abc.js",   // dash but suffix is not an integer
+	}
+	for _, name := range notShards {
+		assert.False(t, isShardFileName(name), "%q should NOT be detected as a shard filename", name)
+	}
+}
+
 func TestCompression(t *testing.T) {
 	testFiles := []string{
 		filepath.Join(testDir, "app1", "main.js"),
@@ -1078,17 +1114,22 @@ func TestTELA(t *testing.T) {
 				Path:   filepath.Join(moveTo, "splitTela.go"),
 			},
 			{
-				Name:   "splitParse.go",
+				Name:   "my-test-file.go",
 				Source: "parse.go",
-				Path:   filepath.Join(moveTo, "splitParse.go"),
+				Path:   filepath.Join(moveTo, "my-test-file.go"),
 			},
 		}
 
 		for si, shardFile := range docShardFiles {
-			var content []byte
-			var compression string
+			goFile, err := readFile(shardFile.Source)
+			if err != nil {
+				t.Fatalf("Could not read %s file: %s", shardFile.Name, err)
+			}
+
 			var totalShards int
-			goFile, _ := readFile(shardFile.Source)
+			var content []byte
+			compression := ""
+
 			if si < 1 {
 				compression = COMPRESSION_GZIP
 				goFile = goFile + goFile // add more data to make it multiple shards
@@ -1201,7 +1242,7 @@ func TestTELA(t *testing.T) {
 				t.Fatalf("Could not confirm INDEX DocShards TX %s: %s", tx, err)
 			}
 
-			t.Logf("Simulator INDEX DocShards SC installed %s: %s", shardIndex.NameHdr, tx)
+			// t.Logf("Simulator INDEX DocShards SC installed %s: %s", shardIndex.NameHdr, tx)
 			installedShardINDEXs = append(installedShardINDEXs, tx)
 		}
 
@@ -1210,16 +1251,16 @@ func TestTELA(t *testing.T) {
 		// Ensure recreated content matches original
 		recreatedFile, err := readFile(docShardFiles[0].ClonePath)
 		assert.NoError(t, err, "Reading recreated %s should not error: %s", docShardFiles[0].Name, err)
-		assert.Equal(t, docShardFiles[0].Content, recreatedFile, "Recreated DocShard should match original")
+		assert.Equal(t, docShardFiles[0].Content, recreatedFile)
 		err = Clone(installedShardINDEXs[0], endpoint)
 		assert.Error(t, err, "Cloning DocShards INDEX should error when exists already")
 
 		err = Clone(installedShardINDEXs[1], endpoint)
 		assert.NoError(t, err, "Cloning DocShards INDEX should not error: %s", err)
-		recreatedFile, err = readFile(docShardFiles[1].Path)
+		recreatedFile, err = readFile(docShardFiles[1].ClonePath)
 		assert.NoError(t, err, "Reading recreated %s should not error: %s", docShardFiles[1].Name, err)
-		assert.Equal(t, docShardFiles[1].Content, recreatedFile, "Recreated DocShard should match original")
-		assert.NotEqual(t, docShardFiles[0].Content, docShardFiles[1].Content, "Test DocShard content should not be matching")
+		assert.Equal(t, docShardFiles[1].Content, recreatedFile)
+		assert.NotEqual(t, docShardFiles[0].Content, docShardFiles[1].Content)
 
 		AllowUpdates(true)
 		_, err = ServeAtCommit(installedShardINDEXs[1], "", endpoint)
@@ -1255,7 +1296,7 @@ func TestTELA(t *testing.T) {
 
 		// Test parseDocShards
 		invalidDocShardSCs := []string{
-			// No error, DOC has subDir
+			// No error, valid shard INDEX
 			`Function InitializePrivate() Uint64
 	10 IF init() == 0 THEN GOTO 30
 	20 RETURN 1
@@ -1263,7 +1304,8 @@ func TestTELA(t *testing.T) {
 	31 STORE("var_header_description", "<descrHdr>")
 	32 STORE("var_header_icon", "<iconURLHdr>")
 	33 STORE("dURL", "<dURL>")
-	40 STORE("DOC1", "` + docs[1][0] + `")
+	40 STORE("DOC1", "` + shardSCIDs[0][0] + `")
+	41 STORE("DOC2", "` + shardSCIDs[0][1] + `")
 	1000 RETURN 0
 	End Function`,
 			// scid != 64
@@ -1309,7 +1351,7 @@ func TestTELA(t *testing.T) {
 			_, recreate, _, err := parseDocShards(sc, "", endpoint)
 			if i == 0 {
 				assert.NoError(t, err, "Parsing DocShard %d should not error: %s", i, err)
-				assert.Equal(t, filepath.Join(telaDocs[3].SubDir, telaDocs[3].NameHdr), recreate, "Recreated file should have subDir prefix")
+				assert.Equal(t, "splitTela.go", recreate)
 			} else {
 				assert.Error(t, err, "Parsing DocShard %d should error", i)
 			}
