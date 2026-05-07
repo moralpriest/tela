@@ -175,7 +175,8 @@ func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
 	for name, function := range sc.Functions {
 		// Find initialize function and parse lines
 		if name == DVM_FUNC_INIT_PRIVATE {
-			for _, line := range function.Lines {
+			for _, ln := range function.LineNumbers {
+				line := function.Lines[ln]
 				// Parse the contents of the line
 				for i, parts := range line {
 					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
@@ -190,7 +191,12 @@ func parseINDEXForDOCs(sc dvm.SmartContract) (scids []string) {
 	}
 
 	// Sort DOC scids by DOC#
-	sort.Strings(docKeys)
+	sort.Slice(docKeys, func(i, j int) bool {
+		numI, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(docKeys[i], string(HEADER_DOCUMENT)), `"`))
+		numJ, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(docKeys[j], string(HEADER_DOCUMENT)), `"`))
+		return numI < numJ
+	})
+
 	for _, v := range docKeys {
 		scids = append(scids, docMap[v])
 	}
@@ -208,7 +214,8 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 	for name, function := range sc.Functions {
 		// Find initialize function and parse lines
 		if name == DVM_FUNC_INIT_PRIVATE {
-			for _, line := range function.Lines {
+			for _, ln := range function.LineNumbers {
+				line := function.Lines[ln]
 				if isCancelled != nil && isCancelled.Load() {
 					err = fmt.Errorf("cancelled")
 					return

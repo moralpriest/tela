@@ -686,7 +686,17 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 	var compression string
 	ext := filepath.Ext(fileName)
 	if IsCompressedExt(ext) {
-		compression = ext
+		// Only attempt decompression for regular files, not for DocShard fragments.
+		// Shard files (e.g. file-3.js.gz) are slices of a single base64-gzip stream.
+		// Decompressing each slice individually always fails with "unexpected EOF" or
+		// "gzip: invalid header". The DocShards INDEX path (cloneDocShards →
+		// ConstructFromShards) handles reconstruction correctly by concatenating all
+		// shard bytes first and then decompressing the combined stream.
+		// When cloneDOC is called for a shard file (e.g. from a non-.shards INDEX),
+		// we save the raw shard bytes without touching them.
+		if !isShardFileName(fileName) {
+			compression = ext
+		}
 	}
 
 	recreate := strings.TrimSuffix(fileName, compression)
