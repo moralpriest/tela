@@ -14,8 +14,6 @@ require (
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => /home/priest/Projects/derohe
-
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
 	github.com/beevik/ntp v1.2.0 // indirect
