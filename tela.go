@@ -267,13 +267,13 @@ func isValidPort(port int) bool {
 func FindOpenPort() (server *http.Server, found bool) {
 	max := tela.port + tela.max
 	port := tela.port // Start on tela.port and try +20
-	server = &http.Server{Addr: fmt.Sprintf(":%d", port)}
+	server = &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port)}
 	for !found && port < max {
-		li, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		li, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			logger.Debugf("[TELA] Finding port: %s\n", err)
 			port++ // Not found, try next port
-			server.Addr = fmt.Sprintf(":%d", port)
+			server.Addr = fmt.Sprintf("127.0.0.1:%d", port)
 			time.Sleep(time.Millisecond * 50)
 			continue
 		}
@@ -716,7 +716,6 @@ func Transfer(wallet *walletapi.Wallet_Disk, ringsize uint64, transfers []rpc.Tr
 
 	return
 }
-
 
 // Clone a TELA-DOC SCID to path from endpoint
 func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (clone Cloning, err error) {
@@ -1271,7 +1270,7 @@ func serveTELA(scid string, clone Cloning) (link string, err error) {
 	server.Handler = fs
 
 	// Serve on this address:port
-	link = fmt.Sprintf("http://localhost%s/%s", server.Addr+clone.ServePath, clone.Entrypoint)
+	link = fmt.Sprintf("http://%s%s/%s", server.Addr, clone.ServePath, clone.Entrypoint)
 
 	if tela.servers == nil {
 		tela.servers = make(map[ServerInfo]*http.Server)
