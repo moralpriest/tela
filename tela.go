@@ -1266,8 +1266,13 @@ func serveTELA(scid string, clone Cloning) (link string, err error) {
 	// Set the directory to serve files from
 	fs := http.FileServer(http.Dir(clone.BasePath))
 
-	// Handle all requests to server
-	server.Handler = fs
+	// Wrap file server with cache-control headers to prevent browser caching
+	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		fs.ServeHTTP(w, r)
+	})
 
 	// Serve on this address:port
 	link = fmt.Sprintf("http://%s%s/%s", server.Addr, clone.ServePath, clone.Entrypoint)
