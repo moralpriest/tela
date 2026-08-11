@@ -106,8 +106,10 @@ type TELA struct {
 		docs  []Version
 	}
 	client struct {
-		WS  *websocket.Conn
-		RPC *jrpc2.Client
+		sync.Mutex
+		WS           *websocket.Conn
+		RPC          *jrpc2.Client
+		lastEndpoint string
 	}
 }
 
@@ -247,13 +249,13 @@ func isValidPort(port int) bool {
 func FindOpenPort() (server *http.Server, found bool) {
 	max := tela.port + tela.max
 	port := tela.port // Start on tela.port and try +20
-	server = &http.Server{Addr: fmt.Sprintf(":%d", port)}
+	server = &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port)}
 	for !found && port < max {
-		li, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		li, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			logger.Debugf("[TELA] Finding port: %s\n", err)
 			port++ // Not found, try next port
-			server.Addr = fmt.Sprintf(":%d", port)
+			server.Addr = fmt.Sprintf("127.0.0.1:%d", port)
 			time.Sleep(time.Millisecond * 50)
 			continue
 		}
@@ -283,6 +285,7 @@ func IsAcceptedLanguage(language string) bool {
 
 // Parse a TELA DOC that has been formatted for DocShards and get its code shard
 func parseDocShardCode(fileName, code string) (shard []byte, err error) {
+	code = strings.ReplaceAll(code, "\x00", "")
 	start := strings.Index(code, "/*")
 	end := strings.Index(code, "*/")
 
@@ -301,6 +304,7 @@ func parseDocShardCode(fileName, code string) (shard []byte, err error) {
 
 // Parse a TELA DOC for its multiline comment
 func parseDocCode(code string) (comment string, err error) {
+	code = strings.ReplaceAll(code, "\x00", "")
 	start := strings.Index(code, "/*")
 	end := strings.Index(code, "*/")
 
@@ -364,7 +368,7 @@ func parseAndSaveTELADoc(filePath, code, doctype, compression string) (err error
 // Decode a hex string if possible otherwise return it
 func decodeHexString(hexStr string) string {
 	if decode, err := hex.DecodeString(hexStr); err == nil {
-		return string(decode)
+		return strings.ReplaceAll(string(decode), "\x00", "")
 	}
 
 	return hexStr
@@ -413,20 +417,80 @@ func getSCErrors(result string) bool {
 	return false
 }
 
+// getRPC connects to a DERO node via WebSocket and returns a jrpc2 client,
+// it reuses the existing connection if it is already connected to the same endpoint
+func (t *TELA) getRPC(endpoint string) (*jrpc2.Client, error) {
+	t.client.Lock()
+	defer t.client.Unlock()
+
+	if t.client.WS != nil && t.client.lastEndpoint == endpoint {
+		return t.client.RPC, nil
+	}
+
+	if t.client.WS != nil {
+		t.client.WS.Close()
+	}
+
+	var err error
+	t.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
+	if err != nil {
+		t.client.WS = nil
+		t.client.lastEndpoint = ""
+		return nil, err
+	}
+
+	t.client.lastEndpoint = endpoint
+	input_output := rwc.New(t.client.WS)
+	t.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
+	return t.client.RPC, nil
+}
+
+// closeRPC closes the current WebSocket connection and clears the client
+func (t *TELA) closeRPC() {
+	t.client.Lock()
+	defer t.client.Unlock()
+	if t.client.WS != nil {
+		t.client.WS.Close()
+		t.client.WS = nil
+		t.client.RPC = nil
+		t.client.lastEndpoint = ""
+	}
+}
+
+// callRPC handles RPC calls with concurrency limiting and retry logic
+func (t *TELA) callRPC(ctx context.Context, endpoint, method string, params, result interface{}) error {
+	rpcSem <- struct{}{}
+	defer func() { <-rpcSem }()
+
+	for i := 0; i < 2; i++ {
+		client, err := t.getRPC(endpoint)
+		if err != nil {
+			if i == 0 && isConnectionError(err) {
+				continue
+			}
+			return err
+		}
+
+		err = client.CallResult(ctx, method, params, result)
+		if err == nil {
+			return nil
+		}
+
+		if i == 0 && isConnectionError(err) {
+			t.closeRPC()
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("RPC call failed after retry")
+}
+
 // Get a string key from smart contract at endpoint
 func getContractVar(scid, key, endpoint string) (variable string, err error) {
 	var params = rpc.GetSC_Params{SCID: scid, Variables: false, Code: false, KeysString: []string{key}}
 	var result rpc.GetSC_Result
 
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
-	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetSC", params, &result)
+	err = tela.callRPC(context.Background(), endpoint, "DERO.GetSC", params, &result)
 	if err != nil {
 		return
 	}
@@ -453,15 +517,7 @@ func getTXID(txid, endpoint string) (txidAsHex string, height int64, err error) 
 	var params = rpc.GetTransaction_Params{Tx_Hashes: []string{txid}}
 	var result rpc.GetTransaction_Result
 
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
-	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetTransaction", params, &result)
+	err = tela.callRPC(context.Background(), endpoint, "DERO.GetTransaction", params, &result)
 	if err != nil {
 		return
 	}
@@ -483,15 +539,7 @@ func getContractVars(scid, endpoint string) (vars map[string]interface{}, err er
 	var params = rpc.GetSC_Params{SCID: scid, Variables: true, Code: false}
 	var result rpc.GetSC_Result
 
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
-	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetSC", params, &result)
+	err = tela.callRPC(context.Background(), endpoint, "DERO.GetSC", params, &result)
 	if err != nil {
 		return
 	}
@@ -506,15 +554,7 @@ func getContractCode(scid, endpoint string) (code string, err error) {
 	var params = rpc.GetSC_Params{SCID: scid, Variables: false, Code: true}
 	var result rpc.GetSC_Result
 
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
-	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetSC", params, &result)
+	err = tela.callRPC(context.Background(), endpoint, "DERO.GetSC", params, &result)
 	if err != nil {
 		return
 	}
@@ -524,7 +564,7 @@ func getContractCode(scid, endpoint string) (code string, err error) {
 		return
 	}
 
-	code = result.Code
+	code = strings.ReplaceAll(result.Code, "\x00", "")
 
 	return
 }
@@ -534,15 +574,7 @@ func getContractCodeAtHeight(height int64, scid, endpoint string) (code string, 
 	var params = rpc.GetSC_Params{SCID: scid, Variables: false, Code: true, TopoHeight: height}
 	var result rpc.GetSC_Result
 
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
-	err = tela.client.RPC.CallResult(context.Background(), "DERO.GetSC", params, &result)
+	err = tela.callRPC(context.Background(), endpoint, "DERO.GetSC", params, &result)
 	if err != nil {
 		return
 	}
@@ -552,7 +584,7 @@ func getContractCodeAtHeight(height int64, scid, endpoint string) (code string, 
 		return
 	}
 
-	code = result.Code
+	code = strings.ReplaceAll(result.Code, "\x00", "")
 
 	return
 }
@@ -626,17 +658,8 @@ func GetGasEstimate(wallet *walletapi.Wallet_Disk, ringsize uint64, transfers []
 	}
 
 	endpoint := walletapi.Daemon_Endpoint_Active
-	tela.client.WS, _, err = websocket.DefaultDialer.Dial("ws://"+endpoint+"/ws", nil)
-	if err != nil {
-		err = fmt.Errorf("could not dial daemon endpoint %s: %s", endpoint, err)
-		return
-	}
-
-	input_output := rwc.New(tela.client.WS)
-	tela.client.RPC = jrpc2.NewClient(channel.RawJSON(input_output, input_output), nil)
-
 	var gasResult rpc.GasEstimate_Result
-	if err = tela.client.RPC.CallResult(context.Background(), "DERO.GetGasEstimate", gasParams, &gasResult); err != nil {
+	if err = tela.callRPC(context.Background(), endpoint, "DERO.GetGasEstimate", gasParams, &gasResult); err != nil {
 		err = fmt.Errorf("could not estimate fees: %s", err)
 		return
 	}
@@ -690,6 +713,7 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid DOC SCID: %s", scid)
 		return
@@ -791,6 +815,7 @@ func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (c
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -1039,6 +1064,7 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
+
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -1220,7 +1246,7 @@ func serveTELA(scid string, clone Cloning) (link string, err error) {
 	server.Handler = fs
 
 	// Serve on this address:port
-	link = fmt.Sprintf("http://localhost%s/%s", server.Addr+clone.ServePath, clone.Entrypoint)
+	link = fmt.Sprintf("http://%s%s/%s", server.Addr, clone.ServePath, clone.Entrypoint)
 
 	if tela.servers == nil {
 		tela.servers = make(map[ServerInfo]*http.Server)
@@ -1321,7 +1347,7 @@ func OpenTELALink(telaLink, endpoint string, cancelled ...*atomic.Bool) (link st
 		// Find the server that already exists
 		for _, s := range GetServerInfo() {
 			if s.SCID == args[1] {
-				link = fmt.Sprintf("http://localhost%s", s.Address)
+				link = fmt.Sprintf("http://%s", s.Address)
 				break
 			}
 		}
@@ -1859,7 +1885,8 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 	}
 
 	for k, v := range vars {
-		switch decodeHexString(k) {
+		key := decodeHexString(k)
+		switch key {
 		case "likes":
 			if f, ok := v.(float64); ok {
 				ratings.Likes = uint64(f)
@@ -1873,7 +1900,11 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 			// daemon runs on testnet, so accept an address in either network form.
 			// Note: rpc.NewAddress validates the address format, not its checksum;
 			// the value parse below filters out anything that is not a rating.
-			a, err := rpc.NewAddress(k)
+			if len(key) < 60 || (!strings.HasPrefix(key, "dero") && !strings.HasPrefix(key, "deto")) {
+				continue
+			}
+
+			a, err := rpc.NewAddress(key)
 			if err != nil {
 				continue // not an address key
 			}

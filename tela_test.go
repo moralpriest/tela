@@ -800,7 +800,7 @@ func TestTELA(t *testing.T) {
 
 		// Server should not exists
 		telaLink := fmt.Sprintf("tela://open/%s/%s", validSCIDs[0], "main.js")
-		expectedLink := "http://localhost:8082/main.js"
+		expectedLink := "http://127.0.0.1:8082/main.js"
 		link, err := OpenTELALink(telaLink, endpoint)
 		assert.NoError(t, err, "OpenTELALink should not error: %s", err)
 		assert.Equal(t, expectedLink, link, "Link should be the same")
