@@ -213,7 +213,6 @@ func parseAndCloneINDEXForDOCs(sc dvm.SmartContract, height int64, basePath, end
 					err = fmt.Errorf("cancelled")
 					return
 				}
-
 				// Parse the contents of the line
 				for i, parts := range line {
 					if strings.Contains(parts, string(HEADER_DOCUMENT)) {
@@ -282,12 +281,19 @@ func parseDocShards(sc dvm.SmartContract, path, endpoint string, cancelled ...*a
 	}
 
 	scids := parseINDEXForDOCs(sc)
+
+	type shardData struct {
+		index int
+		data  []byte
+	}
+
+	var shards []shardData
+
 	for i, scid := range scids {
 		if isCancelled != nil && isCancelled.Load() {
 			err = fmt.Errorf("cancelled")
 			return
 		}
-
 		if len(scid) != 64 {
 			err = fmt.Errorf("invalid DOC SCID: %s", scid)
 			return
@@ -352,7 +358,36 @@ func parseDocShards(sc dvm.SmartContract, path, endpoint string, cancelled ...*a
 			return
 		}
 
-		docShards = append(docShards, shard)
+		// Parse shard number from filename
+		baseName := fileName
+		if compression != "" {
+			baseName = strings.TrimSuffix(fileName, compression)
+		}
+		origExt := filepath.Ext(baseName)
+		baseName = strings.TrimSuffix(baseName, origExt)
+		shardSplit := strings.Split(baseName, "-")
+		if len(shardSplit) < 2 {
+			err = fmt.Errorf("invalid shard filename format: %s", fileName)
+			return
+		}
+		shardNumStr := shardSplit[len(shardSplit)-1]
+		shardNum, parseErr := strconv.Atoi(shardNumStr)
+		if parseErr != nil {
+			err = fmt.Errorf("could not parse shard number from %s: %s", fileName, parseErr)
+			return
+		}
+
+		shards = append(shards, shardData{index: shardNum, data: shard})
+	}
+
+	// Sort shards by index
+	sort.Slice(shards, func(i, j int) bool {
+		return shards[i].index < shards[j].index
+	})
+
+	// Extract sorted data
+	for _, s := range shards {
+		docShards = append(docShards, s.data)
 	}
 
 	return

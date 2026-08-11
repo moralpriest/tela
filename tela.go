@@ -111,6 +111,23 @@ type TELA struct {
 	}
 }
 
+var (
+	rpcSem = make(chan struct{}, 16) // Limit total concurrent RPC calls across all TELA operations
+)
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection") ||
+		strings.Contains(s, "abort") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "closed") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "no such host")
+}
+
 // Versioning structure used for package and contracts
 type Version struct {
 	Major int `json:"major"`
@@ -647,7 +664,6 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
-
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid DOC SCID: %s", scid)
 		return
@@ -749,7 +765,6 @@ func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (c
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
-
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -798,7 +813,7 @@ func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (c
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
@@ -998,7 +1013,6 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 	if isCancelled != nil && isCancelled.Load() {
 		return clone, fmt.Errorf("cancelled")
 	}
-
 	if len(scid) != 64 {
 		err = fmt.Errorf("invalid INDEX SCID: %s", scid)
 		return
@@ -1062,7 +1076,7 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
@@ -1818,7 +1832,7 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 	}
 
 	for k, v := range vars {
-		switch k {
+		switch decodeHexString(k) {
 		case "likes":
 			if f, ok := v.(float64); ok {
 				ratings.Likes = uint64(f)
