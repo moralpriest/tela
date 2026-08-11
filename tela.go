@@ -1088,12 +1088,12 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 			err = fmt.Errorf("failed to create %s: %s", name, err)
 			return
 		}
-		defer shardFile.Close()
-
 		if _, err = shardFile.Write(content[start:end]); err != nil {
+			shardFile.Close()
 			err = fmt.Errorf("failed to write %s: %s", name, err)
 			return
 		}
+		shardFile.Close()
 	}
 
 	return
@@ -1451,8 +1451,12 @@ func ShutdownTELA() {
 	}
 
 	logger.Printf("[TELA] Shutdown\n")
+	// Bound the shutdown so a server that ignores the request cannot hang the
+	// caller forever (previously context.Background()).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for i, s := range tela.servers {
-		err := s.Shutdown(context.Background())
+		err := s.Shutdown(ctx)
 		if err != nil {
 			logger.Errorf("[TELA] Shutdown: %s\n", err)
 		}
