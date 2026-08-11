@@ -370,6 +370,32 @@ func decodeHexString(hexStr string) string {
 	return hexStr
 }
 
+// normalizeAddressNetwork converts addr to the current network's address
+// format. The DVM writes addresses into SC variables with the mainnet prefix
+// regardless of the network the daemon runs on, so convert them to the
+// caller's network for consistency. Addresses that do not parse are returned
+// unchanged.
+func normalizeAddressNetwork(addr string) string {
+	a, err := rpc.NewAddress(addr)
+	if err != nil {
+		return addr
+	}
+
+	return normalizeAddress(a)
+}
+
+// normalizeAddress converts a parsed address to the current network's format.
+// Conversion only happens when the caller's network has been initialized
+// (globals.Config.Name is set); otherwise the stored mainnet form is returned
+// exactly as the DVM wrote it.
+func normalizeAddress(a *rpc.Address) string {
+	if globals.Config.Name != "" && a.Mainnet != globals.IsMainnet() {
+		a.Mainnet = globals.IsMainnet()
+	}
+
+	return a.String()
+}
+
 // Handle all the GetSC append errors to result.ValuesString
 func getSCErrors(result string) bool {
 	errStr := []string{
@@ -1801,7 +1827,8 @@ func DeleteVar(wallet *walletapi.Wallet_Disk, scid, key string) (txid string, er
 }
 
 // Get the rating of a TELA scid from endpoint. Result is all individual ratings, likes and dislikes and the average rating category.
-// Using height will filter the individual ratings (including only >= height) this will not effect like and dislike results
+// Using height will filter the individual ratings (including only >= height) this will not effect like and dislike results.
+// Rater addresses are returned in the caller's network format.
 func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err error) {
 	var vars map[string]interface{}
 	vars, err = getContractVars(scid, endpoint)
@@ -1842,30 +1869,36 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 				ratings.Dislikes = uint64(f)
 			}
 		default:
-			_, err := globals.ParseValidateAddress(k)
-			if err == nil {
-				if rStr, ok := v.(string); ok {
-					split := strings.Split(decodeHexString(rStr), "_")
-					if len(split) < 2 {
-						continue // not a valid rating string
-					}
+			// The DVM stores SC address keys with the mainnet prefix even when the
+			// daemon runs on testnet, so accept an address in either network form.
+			// Note: rpc.NewAddress validates the address format, not its checksum;
+			// the value parse below filters out anything that is not a rating.
+			a, err := rpc.NewAddress(k)
+			if err != nil {
+				continue // not an address key
+			}
 
-					h, err := strconv.ParseUint(split[1], 10, 64)
-					if err != nil {
-						continue // not a valid rating height
-					}
-
-					if h < height {
-						continue // filter by height
-					}
-
-					r, err := strconv.ParseUint(split[0], 10, 64)
-					if err != nil {
-						continue // not a valid rating number
-					}
-
-					ratings.Ratings = append(ratings.Ratings, Rating{Address: k, Rating: r, Height: h})
+			if rStr, ok := v.(string); ok {
+				split := strings.Split(decodeHexString(rStr), "_")
+				if len(split) < 2 {
+					continue // not a valid rating string
 				}
+
+				h, err := strconv.ParseUint(split[1], 10, 64)
+				if err != nil {
+					continue // not a valid rating height
+				}
+
+				if h < height {
+					continue // filter by height
+				}
+
+				r, err := strconv.ParseUint(split[0], 10, 64)
+				if err != nil {
+					continue // not a valid rating number
+				}
+
+				ratings.Ratings = append(ratings.Ratings, Rating{Address: normalizeAddress(a), Rating: r, Height: h})
 			}
 		}
 	}
@@ -2118,7 +2151,7 @@ func GetDOCInfo(scid, endpoint string) (doc DOC, err error) {
 	author := "anon"
 	addr, ok := vars[HEADER_OWNER.Trim()].(string)
 	if ok {
-		author = decodeHexString(addr)
+		author = normalizeAddressNetwork(decodeHexString(addr))
 	}
 
 	fC, ok := vars[HEADER_CHECK_C.Trim()].(string)
@@ -2228,7 +2261,7 @@ func GetINDEXInfo(scid, endpoint string) (index INDEX, err error) {
 	author := "anon"
 	addr, ok := vars[HEADER_OWNER.Trim()].(string)
 	if ok {
-		author = decodeHexString(addr)
+		author = normalizeAddressNetwork(decodeHexString(addr))
 	}
 
 	// Get all DOCs from contract code
