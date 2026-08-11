@@ -237,6 +237,29 @@ func (s ds) clone() string {
 	return filepath.Join(s.main, "clone")
 }
 
+// safeJoin joins elem onto base and fails if the result would fall outside base.
+//
+// The clone and serve paths are built from values a smart contract controls -
+// its dURL, its subDir, and the file names in its headers - and every one of
+// them reaches an os.Create or os.WriteFile. Without this a contract whose dURL
+// is "../../../foo" (or whose header names a "../foo" file) writes outside the
+// datashards directory entirely. filepath.Join cleans "." and ".." but does not
+// stop the result from escaping base, so the check is explicit.
+func safeJoin(base, elem string) (joined string, err error) {
+	joined = filepath.Join(base, elem)
+
+	// Both paths share base, so they have the same relativity and Rel is valid.
+	rel, err := filepath.Rel(base, joined)
+	if err != nil {
+		return "", fmt.Errorf("invalid path element %q: %s", elem, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path element %q escapes the clone directory", elem)
+	}
+
+	return joined, nil
+}
+
 // Find if port is within valid range
 func isValidPort(port int) bool {
 	if port < DEFAULT_MIN_PORT || port > DEFAULT_MAX_PORT-tela.max {
@@ -776,7 +799,9 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 		// Split all subDir to create path
 		split := strings.Split(subDir, "/")
 		for _, s := range split {
-			path = filepath.Join(path, s)
+			if path, err = safeJoin(path, s); err != nil {
+				return
+			}
 		}
 
 		// If serving from subDir point to it
@@ -785,7 +810,10 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 		}
 	}
 
-	filePath := filepath.Join(path, recreate)
+	filePath, err := safeJoin(path, recreate)
+	if err != nil {
+		return
+	}
 	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
 		err = fmt.Errorf("file %s already exists", filePath)
 		return
@@ -858,7 +886,11 @@ func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (c
 	// TELA-INDEX entrypoint, this will be nameHdr of DOC1
 	entrypoint := ""
 	// Path where file will be stored
-	basePath := filepath.Join(path, dURL)
+	basePath, err := safeJoin(path, dURL)
+	if err != nil {
+		err = fmt.Errorf("%s %s", tagErr, err)
+		return
+	}
 	// Path to entrypoint
 	servePath := ""
 
@@ -924,7 +956,10 @@ func ConstructFromShards(docShards [][]byte, recreate, basePath, compression str
 		return
 	}
 
-	filePath := filepath.Join(basePath, recreate)
+	filePath, err := safeJoin(basePath, recreate)
+	if err != nil {
+		return
+	}
 	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
 		err = fmt.Errorf("file %s already exists", filePath)
 		return
@@ -1020,7 +1055,11 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 	// Check no shard files already exist
 	for i := 1; i <= totalShards; i++ {
 		name := newFileName(int(i), fileName, ext, compression)
-		newPath := filepath.Join(fileDir, name)
+		newPath, jerr := safeJoin(fileDir, name)
+		if jerr != nil {
+			err = jerr
+			return
+		}
 		if _, err = os.Stat(newPath); !os.IsNotExist(err) {
 			err = fmt.Errorf("file %s already exists", newPath)
 			return
@@ -1037,8 +1076,14 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 		count++
 		name := newFileName(count, fileName, ext, compression)
 
+		var shardPath string
+		shardPath, err = safeJoin(fileDir, name)
+		if err != nil {
+			return
+		}
+
 		var shardFile *os.File
-		shardFile, err = os.Create(filepath.Join(fileDir, name))
+		shardFile, err = os.Create(shardPath)
 		if err != nil {
 			err = fmt.Errorf("failed to create %s: %s", name, err)
 			return
@@ -1122,7 +1167,11 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 	// TELA-INDEX entrypoint, this will be nameHdr of DOC1
 	entrypoint := ""
 	// Path where file will be stored
-	basePath := filepath.Join(path, dURL)
+	basePath, err := safeJoin(path, dURL)
+	if err != nil {
+		err = fmt.Errorf("%s %s", tagErr, err)
+		return
+	}
 	// Path to entrypoint
 	servePath := ""
 
@@ -1182,7 +1231,13 @@ func Clone(scid, endpoint string) (err error) {
 		_, err = cloneINDEX(scid, dURL, path, endpoint)
 	case "DOC":
 		// Store DOCs in respective dURL directories
-		_, err = cloneDOC(scid, "", filepath.Join(path, dURL), endpoint)
+		var docPath string
+		docPath, err = safeJoin(path, dURL)
+		if err != nil {
+			err = fmt.Errorf("clone could not contain dURL %q: %s", dURL, err)
+			return
+		}
+		_, err = cloneDOC(scid, "", docPath, endpoint)
 	default:
 		err = fmt.Errorf("could not validate %s as TELA INDEX or DOC", scid)
 	}
