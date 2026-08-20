@@ -7,14 +7,14 @@ require (
 	github.com/chzyer/readline v1.5.1
 	github.com/civilware/Gnomon v0.0.0-20240403103529-8b2fdb2b3106
 	github.com/creachadair/jrpc2 v0.35.4
-	github.com/deroproject/derohe v0.0.0-20260527071132-5cd042e8f541
+	github.com/deroproject/derohe v0.0.0-20260820043925-161c7d8af5cb
 	github.com/deroproject/graviton v0.0.0-20220130070622-2c248a53b2e1
 	github.com/gorilla/websocket v1.5.0
 	github.com/stretchr/testify v1.8.4
 	go.etcd.io/bbolt v1.3.7
 )
 
-replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260817052654-390295b40c0b
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260820043925-161c7d8af5cb
 
 require (
 	github.com/VictoriaMetrics/metrics v1.23.1 // indirect
