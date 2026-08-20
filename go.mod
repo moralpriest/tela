@@ -1,6 +1,6 @@
 module github.com/civilware/tela
 
-go 1.23
+go 1.26
 
 require (
 	github.com/andybalholm/brotli v1.2.1
