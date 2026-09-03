@@ -111,24 +111,6 @@ type TELA struct {
 		RPC          *jrpc2.Client
 		lastEndpoint string
 	}
-	varsCache struct {
-		sync.RWMutex
-		vars map[string]cachedVars
-	}
-	ratingCache struct {
-		sync.RWMutex
-		ratings map[string]cachedRating
-	}
-}
-
-type cachedVars struct {
-	vars map[string]interface{}
-	at   time.Time
-}
-
-type cachedRating struct {
-	ratings Rating_Result
-	at      time.Time
 }
 
 var (
@@ -253,6 +235,29 @@ func (s ds) tela() string {
 // Returns TELA clone path
 func (s ds) clone() string {
 	return filepath.Join(s.main, "clone")
+}
+
+// safeJoin joins elem onto base and fails if the result would fall outside base.
+//
+// The clone and serve paths are built from values a smart contract controls -
+// its dURL, its subDir, and the file names in its headers - and every one of
+// them reaches an os.Create or os.WriteFile. Without this a contract whose dURL
+// is "../../../foo" (or whose header names a "../foo" file) writes outside the
+// datashards directory entirely. filepath.Join cleans "." and ".." but does not
+// stop the result from escaping base, so the check is explicit.
+func safeJoin(base, elem string) (joined string, err error) {
+	joined = filepath.Join(base, elem)
+
+	// Both paths share base, so they have the same relativity and Rel is valid.
+	rel, err := filepath.Rel(base, joined)
+	if err != nil {
+		return "", fmt.Errorf("invalid path element %q: %s", elem, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path element %q escapes the clone directory", elem)
+	}
+
+	return joined, nil
 }
 
 // Find if port is within valid range
@@ -392,6 +397,32 @@ func decodeHexString(hexStr string) string {
 	return hexStr
 }
 
+// normalizeAddressNetwork converts addr to the current network's address
+// format. The DVM writes addresses into SC variables with the mainnet prefix
+// regardless of the network the daemon runs on, so convert them to the
+// caller's network for consistency. Addresses that do not parse are returned
+// unchanged.
+func normalizeAddressNetwork(addr string) string {
+	a, err := rpc.NewAddress(addr)
+	if err != nil {
+		return addr
+	}
+
+	return normalizeAddress(a)
+}
+
+// normalizeAddress converts a parsed address to the current network's format.
+// Conversion only happens when the caller's network has been initialized
+// (globals.Config.Name is set); otherwise the stored mainnet form is returned
+// exactly as the DVM wrote it.
+func normalizeAddress(a *rpc.Address) string {
+	if globals.Config.Name != "" && a.Mainnet != globals.IsMainnet() {
+		a.Mainnet = globals.IsMainnet()
+	}
+
+	return a.String()
+}
+
 // Handle all the GetSC append errors to result.ValuesString
 func getSCErrors(result string) bool {
 	errStr := []string{
@@ -528,24 +559,6 @@ func getTXID(txid, endpoint string) (txidAsHex string, height int64, err error) 
 
 // Get the current state of all string keys in a smart contract
 func getContractVars(scid, endpoint string) (vars map[string]interface{}, err error) {
-	tela.varsCache.RLock()
-	if tela.varsCache.vars == nil {
-		tela.varsCache.RUnlock()
-		tela.varsCache.Lock()
-		if tela.varsCache.vars == nil {
-			tela.varsCache.vars = make(map[string]cachedVars)
-		}
-		tela.varsCache.Unlock()
-		tela.varsCache.RLock()
-	}
-
-	if cv, ok := tela.varsCache.vars[scid+endpoint]; ok && time.Since(cv.at) < 30*time.Second {
-		vars = cv.vars
-		tela.varsCache.RUnlock()
-		return
-	}
-	tela.varsCache.RUnlock()
-
 	var params = rpc.GetSC_Params{SCID: scid, Variables: true, Code: false}
 	var result rpc.GetSC_Result
 
@@ -555,10 +568,6 @@ func getContractVars(scid, endpoint string) (vars map[string]interface{}, err er
 	}
 
 	vars = result.VariableStringKeys
-
-	tela.varsCache.Lock()
-	tela.varsCache.vars[scid+endpoint] = cachedVars{vars: vars, at: time.Now()}
-	tela.varsCache.Unlock()
 
 	return
 }
@@ -766,17 +775,7 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 	var compression string
 	ext := filepath.Ext(fileName)
 	if IsCompressedExt(ext) {
-		// Only attempt decompression for regular files, not for DocShard fragments.
-		// Shard files (e.g. file-3.js.gz) are slices of a single base64-gzip stream.
-		// Decompressing each slice individually always fails with "unexpected EOF" or
-		// "gzip: invalid header". The DocShards INDEX path (cloneDocShards →
-		// ConstructFromShards) handles reconstruction correctly by concatenating all
-		// shard bytes first and then decompressing the combined stream.
-		// When cloneDOC is called for a shard file (e.g. from a non-.shards INDEX),
-		// we save the raw shard bytes without touching them.
-		if !isShardFileName(fileName) {
-			compression = ext
-		}
+		compression = ext
 	}
 
 	recreate := strings.TrimSuffix(fileName, compression)
@@ -800,7 +799,9 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 		// Split all subDir to create path
 		split := strings.Split(subDir, "/")
 		for _, s := range split {
-			path = filepath.Join(path, s)
+			if path, err = safeJoin(path, s); err != nil {
+				return
+			}
 		}
 
 		// If serving from subDir point to it
@@ -809,7 +810,10 @@ func cloneDOC(scid, docNum, path, endpoint string, cancelled ...*atomic.Bool) (c
 		}
 	}
 
-	filePath := filepath.Join(path, recreate)
+	filePath, err := safeJoin(path, recreate)
+	if err != nil {
+		return
+	}
 	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
 		err = fmt.Errorf("file %s already exists", filePath)
 		return
@@ -882,13 +886,17 @@ func cloneINDEX(scid, dURL, path, endpoint string, cancelled ...*atomic.Bool) (c
 	// TELA-INDEX entrypoint, this will be nameHdr of DOC1
 	entrypoint := ""
 	// Path where file will be stored
-	basePath := filepath.Join(path, dURL)
+	basePath, err := safeJoin(path, dURL)
+	if err != nil {
+		err = fmt.Errorf("%s %s", tagErr, err)
+		return
+	}
 	// Path to entrypoint
 	servePath := ""
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
@@ -948,7 +956,10 @@ func ConstructFromShards(docShards [][]byte, recreate, basePath, compression str
 		return
 	}
 
-	filePath := filepath.Join(basePath, recreate)
+	filePath, err := safeJoin(basePath, recreate)
+	if err != nil {
+		return
+	}
 	if _, err = os.Stat(filePath); !os.IsNotExist(err) {
 		err = fmt.Errorf("file %s already exists", filePath)
 		return
@@ -1044,7 +1055,11 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 	// Check no shard files already exist
 	for i := 1; i <= totalShards; i++ {
 		name := newFileName(int(i), fileName, ext, compression)
-		newPath := filepath.Join(fileDir, name)
+		newPath, jerr := safeJoin(fileDir, name)
+		if jerr != nil {
+			err = jerr
+			return
+		}
 		if _, err = os.Stat(newPath); !os.IsNotExist(err) {
 			err = fmt.Errorf("file %s already exists", newPath)
 			return
@@ -1061,18 +1076,24 @@ func CreateShardFiles(filePath, compression string, content []byte) (err error) 
 		count++
 		name := newFileName(count, fileName, ext, compression)
 
+		var shardPath string
+		shardPath, err = safeJoin(fileDir, name)
+		if err != nil {
+			return
+		}
+
 		var shardFile *os.File
-		shardFile, err = os.Create(filepath.Join(fileDir, name))
+		shardFile, err = os.Create(shardPath)
 		if err != nil {
 			err = fmt.Errorf("failed to create %s: %s", name, err)
 			return
 		}
-		defer shardFile.Close()
-
 		if _, err = shardFile.Write(content[start:end]); err != nil {
+			shardFile.Close()
 			err = fmt.Errorf("failed to write %s: %s", name, err)
 			return
 		}
+		shardFile.Close()
 	}
 
 	return
@@ -1146,13 +1167,17 @@ func cloneINDEXAtCommit(height int64, scid, txid, path, endpoint string, cancell
 	// TELA-INDEX entrypoint, this will be nameHdr of DOC1
 	entrypoint := ""
 	// Path where file will be stored
-	basePath := filepath.Join(path, dURL)
+	basePath, err := safeJoin(path, dURL)
+	if err != nil {
+		err = fmt.Errorf("%s %s", tagErr, err)
+		return
+	}
 	// Path to entrypoint
 	servePath := ""
 
 	// If INDEX contains DocShards to be constructed
 	if strings.HasSuffix(dURL, TAG_DOC_SHARDS) {
-		err = cloneDocShards(sc, basePath, endpoint)
+		err = cloneDocShards(sc, basePath, endpoint, cancelled...)
 		if err != nil {
 			err = fmt.Errorf("%s %s", tagErr, err)
 			return
@@ -1206,7 +1231,13 @@ func Clone(scid, endpoint string) (err error) {
 		_, err = cloneINDEX(scid, dURL, path, endpoint)
 	case "DOC":
 		// Store DOCs in respective dURL directories
-		_, err = cloneDOC(scid, "", filepath.Join(path, dURL), endpoint)
+		var docPath string
+		docPath, err = safeJoin(path, dURL)
+		if err != nil {
+			err = fmt.Errorf("clone could not contain dURL %q: %s", dURL, err)
+			return
+		}
+		_, err = cloneDOC(scid, "", docPath, endpoint)
 	default:
 		err = fmt.Errorf("could not validate %s as TELA INDEX or DOC", scid)
 	}
@@ -1376,7 +1407,7 @@ func OpenTELALink(telaLink, endpoint string, cancelled ...*atomic.Bool) (link st
 		// Find the server that already exists
 		for _, s := range GetServerInfo() {
 			if s.SCID == args[1] {
-				link = fmt.Sprintf("http://localhost%s", s.Address)
+				link = fmt.Sprintf("http://%s", s.Address)
 				break
 			}
 		}
@@ -1425,8 +1456,12 @@ func ShutdownTELA() {
 	}
 
 	logger.Printf("[TELA] Shutdown\n")
+	// Bound the shutdown so a server that ignores the request cannot hang the
+	// caller forever (previously context.Background()).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for i, s := range tela.servers {
-		err := s.Shutdown(context.Background())
+		err := s.Shutdown(ctx)
 		if err != nil {
 			logger.Errorf("[TELA] Shutdown: %s\n", err)
 		}
@@ -1882,27 +1917,9 @@ func DeleteVar(wallet *walletapi.Wallet_Disk, scid, key string) (txid string, er
 }
 
 // Get the rating of a TELA scid from endpoint. Result is all individual ratings, likes and dislikes and the average rating category.
-// Using height will filter the individual ratings (including only >= height) this will not effect like and dislike results
+// Using height will filter the individual ratings (including only >= height) this will not effect like and dislike results.
+// Rater addresses are returned in the caller's network format.
 func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err error) {
-	cacheKey := fmt.Sprintf("%s%s%d", scid, endpoint, height)
-	tela.ratingCache.RLock()
-	if tela.ratingCache.ratings == nil {
-		tela.ratingCache.RUnlock()
-		tela.ratingCache.Lock()
-		if tela.ratingCache.ratings == nil {
-			tela.ratingCache.ratings = make(map[string]cachedRating)
-		}
-		tela.ratingCache.Unlock()
-		tela.ratingCache.RLock()
-	}
-
-	if cr, ok := tela.ratingCache.ratings[cacheKey]; ok && time.Since(cr.at) < 30*time.Second {
-		ratings = cr.ratings
-		tela.ratingCache.RUnlock()
-		return
-	}
-	tela.ratingCache.RUnlock()
-
 	var vars map[string]interface{}
 	vars, err = getContractVars(scid, endpoint)
 	if err != nil {
@@ -1943,58 +1960,55 @@ func GetRating(scid, endpoint string, height uint64) (ratings Rating_Result, err
 				ratings.Dislikes = uint64(f)
 			}
 		default:
+			// The DVM stores SC address keys with the mainnet prefix even when the
+			// daemon runs on testnet, so accept an address in either network form.
+			// Note: rpc.NewAddress validates the address format, not its checksum;
+			// the value parse below filters out anything that is not a rating.
 			if len(key) < 60 || (!strings.HasPrefix(key, "dero") && !strings.HasPrefix(key, "deto")) {
 				continue
 			}
 
-			_, err := globals.ParseValidateAddress(key)
-			if err == nil {
-				if rStr, ok := v.(string); ok {
-					split := strings.Split(decodeHexString(rStr), "_")
-					if len(split) < 2 {
-						continue // not a valid rating string
-					}
+			a, err := rpc.NewAddress(key)
+			if err != nil {
+				continue // not an address key
+			}
 
-					h, err := strconv.ParseUint(split[1], 10, 64)
-					if err != nil {
-						continue // not a valid rating height
-					}
-
-					if h < height {
-						continue // filter by height
-					}
-
-					r, err := strconv.ParseUint(split[0], 10, 64)
-					if err != nil {
-						continue // not a valid rating number
-					}
-
-					ratings.Ratings = append(ratings.Ratings, Rating{Address: key, Rating: r, Height: h})
+			if rStr, ok := v.(string); ok {
+				split := strings.Split(decodeHexString(rStr), "_")
+				if len(split) < 2 {
+					continue // not a valid rating string
 				}
+
+				h, err := strconv.ParseUint(split[1], 10, 64)
+				if err != nil {
+					continue // not a valid rating height
+				}
+
+				if h < height {
+					continue // filter by height
+				}
+
+				r, err := strconv.ParseUint(split[0], 10, 64)
+				if err != nil {
+					continue // not a valid rating number
+				}
+
+				ratings.Ratings = append(ratings.Ratings, Rating{Address: normalizeAddress(a), Rating: r, Height: h})
 			}
 		}
 	}
 
 	sort.Slice(ratings.Ratings, func(i, j int) bool { return ratings.Ratings[i].Height > ratings.Ratings[j].Height })
 
-	// Gather average rating from the full rating value (0-99) to include detail granularity
+	// Gather average rating from the category sum only
 	var sum uint64
 	for _, num := range ratings.Ratings {
-		sum += num.Rating
+		sum += num.Rating / 10
 	}
 
-	if len(ratings.Ratings) > 0 {
-		ratings.Average = float64(sum) / (float64(len(ratings.Ratings)) * 10)
-		// Ensure that even very low ratings don't result in an exact 0.0
-		// so they can be distinguished from unrated apps.
-		if ratings.Average <= 0 {
-			ratings.Average = 0.01
-		}
+	if sum > 0 {
+		ratings.Average = float64(sum) / float64(len(ratings.Ratings))
 	}
-
-	tela.ratingCache.Lock()
-	tela.ratingCache.ratings[cacheKey] = cachedRating{ratings: ratings, at: time.Now()}
-	tela.ratingCache.Unlock()
 
 	return
 }
@@ -2232,7 +2246,7 @@ func GetDOCInfo(scid, endpoint string) (doc DOC, err error) {
 	author := "anon"
 	addr, ok := vars[HEADER_OWNER.Trim()].(string)
 	if ok {
-		author = decodeHexString(addr)
+		author = normalizeAddressNetwork(decodeHexString(addr))
 	}
 
 	fC, ok := vars[HEADER_CHECK_C.Trim()].(string)
@@ -2342,7 +2356,7 @@ func GetINDEXInfo(scid, endpoint string) (index INDEX, err error) {
 	author := "anon"
 	addr, ok := vars[HEADER_OWNER.Trim()].(string)
 	if ok {
-		author = decodeHexString(addr)
+		author = normalizeAddressNetwork(decodeHexString(addr))
 	}
 
 	// Get all DOCs from contract code

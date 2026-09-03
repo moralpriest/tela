@@ -1798,7 +1798,7 @@ func findDocShardFiles(filePath string) (docShards [][]byte, recreate, compressi
 		shardFileName := file.Name()
 		if strings.HasPrefix(shardFileName, prefix) && filepath.Ext(shardFileName) == ext {
 			// Parse the shard number
-			baseName := strings.TrimSuffix(shardFileName, ext)  // remove compression ext, e.g., .gz
+			baseName := strings.TrimSuffix(shardFileName, ext) // remove compression ext, e.g., .gz
 			if compression != "" {
 				// If compressed, also remove the original ext
 				origExt := filepath.Ext(strings.TrimSuffix(fileName, ext))
